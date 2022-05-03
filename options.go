@@ -22,6 +22,7 @@ type Option interface {
 	isConnectable() bool
 	isConnectOperation() bool
 	isSerialized() (bool, func(interface{}) int)
+	sendLatestAsInitial() (bool, interface{})
 }
 
 type funcOption struct {
@@ -37,8 +38,13 @@ type funcOption struct {
 	connectable          bool
 	connectOperation     bool
 	serialized           func(interface{}) int
+	withLatestAsInitial  bool
+	initValue            interface{}
 }
 
+func (fdo *funcOption) sendLatestAsInitial() (bool, interface{}) {
+	return fdo.withLatestAsInitial, fdo.initValue
+}
 func (fdo *funcOption) toPropagate() bool {
 	return fdo.propagate
 }
@@ -169,6 +175,13 @@ func WithErrorStrategy(strategy OnErrorStrategy) Option {
 func WithPublishStrategy() Option {
 	return newFuncOption(func(options *funcOption) {
 		options.connectable = true
+	})
+}
+
+func withLatestAsInitial(initValue interface{}) Option {
+	return newFuncOption(func(options *funcOption) {
+		options.withLatestAsInitial = true
+		options.initValue = initValue
 	})
 }
 

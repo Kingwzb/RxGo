@@ -199,7 +199,7 @@ func FromEventSource(next <-chan Item, opts ...Option) Observable {
 	option := parseOptions(opts...)
 
 	return &ObservableImpl{
-		iterable: newEventSourceIterable(option.buildContext(emptyContext), next, option.getBackPressureStrategy()),
+		iterable: newEventSourceIterable(option.buildContext(emptyContext), next, option.getBackPressureStrategy(), opts...),
 	}
 }
 

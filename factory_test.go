@@ -355,6 +355,23 @@ func Test_FromEventSource_Drop(t *testing.T) {
 	}))
 }
 
+func Test_FromEventSource_WithLatestAsInitial(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	const max = 10
+	next := make(chan Item, max)
+	obs := FromEventSource(next, WithPublishStrategy(), WithBackPressureStrategy(Drop), withLatestAsInitial(0), WithBufferedChannel(1))
+	ob1 := obs.Observe()
+	ob2 := obs.Observe()
+	assert.Equal(t, 0, (<-ob1).V, "first observer should receive initial value 0 even if no event happened yet")
+	assert.Equal(t, 0, (<-ob2).V, "second observer should also receive initial value 0 even if no event happened yet")
+	next <- Of(1)
+	assert.Equal(t, 1, (<-ob1).V, "first observer should receive new value 1 from event")
+	assert.Equal(t, 1, (<-ob2).V, "second observer should also receive same new value 1 from event")
+	ob3 := obs.Observe()
+	assert.Equal(t, 1, (<-ob3).V, "third observer should receive latest value 1 as its first value")
+	close(next)
+}
+
 // FIXME
 //func Test_Interval(t *testing.T) {
 //	defer goleak.VerifyNone(t)
