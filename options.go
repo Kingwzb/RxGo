@@ -178,7 +178,7 @@ func WithPublishStrategy() Option {
 	})
 }
 
-func withLatestAsInitial(initValue interface{}) Option {
+func WithLatestAsInitial(initValue interface{}) Option {
 	return newFuncOption(func(options *funcOption) {
 		options.withLatestAsInitial = true
 		options.initValue = initValue

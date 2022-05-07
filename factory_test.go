@@ -359,7 +359,7 @@ func Test_FromEventSource_WithLatestAsInitial(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	const max = 10
 	next := make(chan Item, max)
-	obs := FromEventSource(next, WithPublishStrategy(), WithBackPressureStrategy(Drop), withLatestAsInitial(0), WithBufferedChannel(1))
+	obs := FromEventSource(next, WithPublishStrategy(), WithBackPressureStrategy(Drop), WithLatestAsInitial(0), WithBufferedChannel(1))
 	ob1 := obs.Observe()
 	ob2 := obs.Observe()
 	assert.Equal(t, 0, (<-ob1).V, "first observer should receive initial value 0 even if no event happened yet")
