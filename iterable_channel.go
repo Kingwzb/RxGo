@@ -5,10 +5,15 @@ import (
 	"sync"
 )
 
+type subscriber struct {
+	options Option
+	channel chan Item
+	ctx     context.Context
+}
 type channelIterable struct {
 	next                   <-chan Item
 	opts                   []Option
-	subscribers            []chan Item
+	subscribers            []subscriber
 	mutex                  sync.RWMutex
 	producerAlreadyCreated bool
 }
@@ -16,7 +21,7 @@ type channelIterable struct {
 func newChannelIterable(next <-chan Item, opts ...Option) Iterable {
 	return &channelIterable{
 		next:        next,
-		subscribers: make([]chan Item, 0),
+		subscribers: make([]subscriber, 0),
 		opts:        opts,
 	}
 }
@@ -36,7 +41,7 @@ func (i *channelIterable) Observe(opts ...Option) <-chan Item {
 
 	ch := option.buildChannel()
 	i.mutex.Lock()
-	i.subscribers = append(i.subscribers, ch)
+	i.subscribers = append(i.subscribers, subscriber{options: option, channel: ch, ctx: option.buildContext(emptyContext)})
 	i.mutex.Unlock()
 	return ch
 }
@@ -54,11 +59,26 @@ func (i *channelIterable) produce(ctx context.Context) {
 	defer func() {
 		i.mutex.RLock()
 		for _, subscriber := range i.subscribers {
-			close(subscriber)
+			close(subscriber.channel)
 		}
 		i.mutex.RUnlock()
 	}()
 
+	unsubscribe := func(toRemove []int) {
+		if len(toRemove) > 0 {
+			remaining := make([]subscriber, 0, len(i.subscribers)-len(toRemove))
+			which := 0
+			for idx, subscriber := range i.subscribers {
+				if which >= len(toRemove) || idx != toRemove[which] {
+					remaining = append(remaining, subscriber)
+				} else {
+					close(subscriber.channel)
+					which++
+				}
+			}
+			i.subscribers = remaining
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -67,11 +87,18 @@ func (i *channelIterable) produce(ctx context.Context) {
 			if !ok {
 				return
 			}
-			i.mutex.RLock()
-			for _, subscriber := range i.subscribers {
-				subscriber <- item
+			i.mutex.Lock()
+			toRemove := []int{}
+			for idx, subscriber := range i.subscribers {
+				select {
+				case <-subscriber.ctx.Done():
+					toRemove = append(toRemove, idx)
+				case subscriber.channel <- item:
+				}
 			}
-			i.mutex.RUnlock()
+			unsubscribe(toRemove)
+			i.mutex.Unlock()
+
 		}
 	}
 }

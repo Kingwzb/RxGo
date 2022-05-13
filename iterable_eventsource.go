@@ -8,6 +8,7 @@ import (
 type observer struct {
 	options Option
 	channel chan Item
+	ctx     context.Context
 }
 type eventSourceIterable struct {
 	sync.RWMutex
@@ -29,6 +30,21 @@ func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy Back
 			it.closeAllObservers()
 		}()
 
+		unsubscribe := func(toRemove []int) {
+			if len(toRemove) > 0 {
+				remaining := make([]observer, 0, len(it.observers)-len(toRemove))
+				which := 0
+				for idx, observer := range it.observers {
+					if which >= len(toRemove) || idx != toRemove[which] {
+						remaining = append(remaining, observer)
+					} else {
+						close(observer.channel)
+						which++
+					}
+				}
+				it.observers = remaining
+			}
+		}
 		deliver := func(item Item, ob *observer) (done bool) {
 			it.RLock()
 			defer it.RUnlock()
@@ -42,11 +58,18 @@ func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy Back
 						return true
 					}
 				} else {
-					for _, observer := range it.observers {
-						if !item.SendContext(ctx, observer.channel) {
-							return true
+					toRemove := []int{}
+					for idx, observer := range it.observers {
+						select {
+						case <-observer.ctx.Done():
+							toRemove = append(toRemove, idx)
+						default:
+							if !item.SendContext(ctx, observer.channel) {
+								return true
+							}
 						}
 					}
+					unsubscribe(toRemove)
 				}
 			case Drop:
 				if ob != nil {
@@ -57,14 +80,18 @@ func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy Back
 					case ob.channel <- item:
 					}
 				} else {
-					for _, observer := range it.observers {
+					toRemove := []int{}
+					for idx, observer := range it.observers {
 						select {
 						default:
 						case <-ctx.Done():
 							return true
+						case <-observer.ctx.Done():
+							toRemove = append(toRemove, idx)
 						case observer.channel <- item:
 						}
 					}
+					unsubscribe(toRemove)
 				}
 			}
 			return
@@ -128,7 +155,7 @@ func (i *eventSourceIterable) Observe(opts ...Option) <-chan Item {
 	if i.disposed {
 		close(next)
 	} else {
-		i.newObserver <- observer{options: option, channel: next}
+		i.newObserver <- observer{options: option, channel: next, ctx: option.buildContext(context.Background())}
 	}
 	i.RUnlock()
 	return next
