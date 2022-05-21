@@ -13,7 +13,9 @@ type subscriber struct {
 type channelIterable struct {
 	next                   <-chan Item
 	opts                   []Option
+	options                Option
 	subscribers            []subscriber
+	newSubscriber          chan subscriber
 	mutex                  sync.RWMutex
 	producerAlreadyCreated bool
 }
@@ -23,6 +25,7 @@ func newChannelIterable(next <-chan Item, opts ...Option) Iterable {
 		next:        next,
 		subscribers: make([]subscriber, 0),
 		opts:        opts,
+		options:     parseOptions(opts...),
 	}
 }
 
@@ -41,7 +44,11 @@ func (i *channelIterable) Observe(opts ...Option) <-chan Item {
 
 	ch := option.buildChannel()
 	i.mutex.Lock()
-	i.subscribers = append(i.subscribers, subscriber{options: option, channel: ch, ctx: option.buildContext(emptyContext)})
+	if i.producerAlreadyCreated {
+		i.newSubscriber <- subscriber{options: option, channel: ch, ctx: option.buildContext(context.Background())}
+	} else {
+		i.subscribers = append(i.subscribers, subscriber{options: option, channel: ch, ctx: option.buildContext(emptyContext)})
+	}
 	i.mutex.Unlock()
 	return ch
 }
@@ -56,11 +63,15 @@ func (i *channelIterable) connect(ctx context.Context) {
 }
 
 func (i *channelIterable) produce(ctx context.Context) {
+	closeChan := false
 	defer func() {
 		i.mutex.RLock()
-		for _, subscriber := range i.subscribers {
-			close(subscriber.channel)
+		if closeChan {
+			for _, subscriber := range i.subscribers {
+				close(subscriber.channel)
+			}
 		}
+		i.producerAlreadyCreated = false
 		i.mutex.RUnlock()
 	}()
 
@@ -79,26 +90,100 @@ func (i *channelIterable) produce(ctx context.Context) {
 			i.subscribers = remaining
 		}
 	}
+	deliver := func(item Item, ob *subscriber) (done bool) {
+		i.mutex.RLock()
+		defer i.mutex.RUnlock()
+
+		switch i.options.getBackPressureStrategy() {
+		default:
+			fallthrough
+		case Block:
+			if ob != nil {
+				if !item.SendContext(ctx, ob.channel) {
+					return true
+				}
+			} else {
+				toRemove := []int{}
+				for idx, subscriber := range i.subscribers {
+					select {
+					case <-subscriber.ctx.Done():
+						toRemove = append(toRemove, idx)
+					default:
+						if !item.SendContext(ctx, subscriber.channel) {
+							return true
+						}
+					}
+				}
+				unsubscribe(toRemove)
+			}
+		case Drop:
+			if ob != nil {
+				select {
+				default:
+				case <-ctx.Done():
+					return true
+				case ob.channel <- item:
+				}
+			} else {
+				toRemove := []int{}
+				for idx, observer := range i.subscribers {
+					select {
+					default:
+					case <-ctx.Done():
+						return true
+					case <-observer.ctx.Done():
+						toRemove = append(toRemove, idx)
+					case observer.channel <- item:
+					}
+				}
+				unsubscribe(toRemove)
+			}
+		}
+		return
+	}
+	if flag, initValue := i.options.sendLatestAsInitial(); flag {
+		func() {
+			i.mutex.RLock()
+			defer i.mutex.RUnlock()
+			for _, subscriber := range i.subscribers {
+				if done := deliver(Of(initValue), &subscriber); done {
+					return
+				}
+
+			}
+		}()
+	}
+	i.mutex.RUnlock()
+	var latestValue Item
+	hasLatestValue := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case item, ok := <-i.next:
+		case subscriber, ok := <-i.newSubscriber:
 			if !ok {
 				return
 			}
-			i.mutex.Lock()
-			toRemove := []int{}
-			for idx, subscriber := range i.subscribers {
-				select {
-				case <-subscriber.ctx.Done():
-					toRemove = append(toRemove, idx)
-				case subscriber.channel <- item:
+			if flag, initValue := subscriber.options.sendLatestAsInitial(); flag {
+				if hasLatestValue {
+					subscriber.channel <- latestValue
+				} else {
+					subscriber.channel <- Of(initValue)
 				}
 			}
-			unsubscribe(toRemove)
+			i.mutex.Lock()
+			i.subscribers = append(i.subscribers, subscriber)
 			i.mutex.Unlock()
-
+		case item, ok := <-i.next:
+			if !ok {
+				closeChan = true
+				return
+			}
+			latestValue = item
+			hasLatestValue = true
+			if done := deliver(item, nil); done {
+				return
+			}
 		}
 	}
 }
