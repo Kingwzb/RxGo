@@ -196,6 +196,7 @@ func Assert(ctx context.Context, t *testing.T, iterable Iterable, assertions ...
 	errs := make([]error, 0)
 
 	observe := iterable.Observe()
+	//fmt.Println(" --- Assert started for loop")
 loop:
 	for {
 		select {
@@ -209,6 +210,7 @@ loop:
 				errs = append(errs, item.E)
 			} else {
 				got = append(got, item.V)
+				//fmt.Printf(" --- Assert received %+v -> %+v\n", item, got)
 			}
 		}
 	}

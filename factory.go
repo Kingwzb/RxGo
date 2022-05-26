@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -70,7 +69,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 
 	go func() {
 		size := uint32(len(observables))
-		var counter uint32
+		var counter uint32 = 0
 		s := make([]interface{}, size)
 		mutex := sync.Mutex{}
 		wg := sync.WaitGroup{}
@@ -79,29 +78,44 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 
 		handler := func(ctx context.Context, it Iterable, i int) {
 			defer wg.Done()
-			observe := it.Observe(opts...)
+			//fmt.Printf("combinedLatest handler %d/%d started\n", i+1, size)
+			//observe := it.Observe(append(opts, WithPublishStrategyAs(false))...)
+			observe := it.Observe()
 			for {
+				//fmt.Printf("combinedLatest handler %d/%d select\n", i+1, size)
 				select {
 				case <-ctx.Done():
+					//fmt.Printf("combinedLatest handler %d/%d exit\n", i+1, size)
 					return
 				case item, ok := <-observe:
 					if !ok {
+						//fmt.Printf("combinedLatest handler %d/%d done\n", i+1, size)
 						return
 					}
+					//fmt.Printf("combinedLatest handler %d/%d received %+v\n", i+1, size, item)
 					if item.Error() {
 						next <- item
 						errCh <- struct{}{}
 						return
 					}
-					if s[i] == nil {
-						atomic.AddUint32(&counter, 1)
-					}
 					mutex.Lock()
-					s[i] = item.V
-					if atomic.LoadUint32(&counter) == size {
-						next <- Of(f(s...))
+					if s[i] == nil {
+						counter += 1
 					}
-					mutex.Unlock()
+					//fmt.Printf("combinedLatest items ready %d/%d\n", counter, size)
+					s[i] = item.V
+					if counter == size {
+						newData := make([]interface{}, len(s))
+						copy(newData, s)
+						vs := Of(f(newData...))
+						mutex.Unlock()
+						//fmt.Printf("combinedLatest sending %+v\n", vs)
+						next <- vs
+						//fmt.Printf("combinedLatest sent %+v\n", vs)
+					} else {
+						//fmt.Printf("combinedLatest not ready yet\n")
+						mutex.Unlock()
+					}
 				}
 			}
 		}
@@ -118,12 +132,13 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 		}()
 
 		wg.Wait()
+		//fmt.Printf("combinedLatest exit\n")
 		close(next)
 		close(errCh)
 	}()
 
 	return &ObservableImpl{
-		iterable: newChannelIterable(next),
+		iterable: newChannelIterable(next, opts...),
 	}
 }
 
@@ -136,14 +151,19 @@ func Concat(observables []Observable, opts ...Option) Observable {
 	go func() {
 		defer close(next)
 		for _, obs := range observables {
-			observe := obs.Observe(opts...)
+			//fmt.Printf("Concat start loop on ob %d\n", idx)
+			//observe := obs.Observe(append(opts, WithPublishStrategyAs(false))...)
+			observe := obs.Observe()
 		loop:
 			for {
 				select {
 				case <-ctx.Done():
+					//fmt.Printf("Concat exit\n")
 					return
 				case item, ok := <-observe:
+					//fmt.Printf("Concat received %+v\n", item)
 					if !ok {
+						//fmt.Printf("Concat break loop\n")
 						break loop
 					}
 					if item.Error() {
@@ -156,7 +176,7 @@ func Concat(observables []Observable, opts ...Option) Observable {
 		}
 	}()
 	return &ObservableImpl{
-		iterable: newChannelIterable(next),
+		iterable: newChannelIterable(next, opts...),
 	}
 }
 

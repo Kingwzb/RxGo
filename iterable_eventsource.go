@@ -12,17 +12,21 @@ type observer struct {
 }
 type eventSourceIterable struct {
 	sync.RWMutex
+	ctx         context.Context
 	observers   []observer
 	disposed    bool
 	opts        []Option
+	options     Option
 	newObserver chan observer
 }
 
 func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy BackpressureStrategy, opts ...Option) Iterable {
 	it := &eventSourceIterable{
+		ctx:         ctx,
 		observers:   make([]observer, 0),
 		opts:        opts,
-		newObserver: make(chan observer),
+		options:     parseOptions(opts...),
+		newObserver: make(chan observer, 1),
 	}
 
 	go func() {
@@ -45,60 +49,74 @@ func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy Back
 				it.observers = remaining
 			}
 		}
-		deliver := func(item Item, ob *observer) (done bool) {
-			it.RLock()
-			defer it.RUnlock()
-
+		deliver := func(item Item, ob *observer) (done bool, remove bool) {
+			strategy := ob.options.getBackPressureStrategy()
+			//fmt.Printf("deliver item in mode %v\n", strategy)
 			switch strategy {
 			default:
 				fallthrough
 			case Block:
-				if ob != nil {
+				select {
+				case <-ob.ctx.Done():
+					return false, true
+				default:
 					if !item.SendContext(ctx, ob.channel) {
-						return true
+						//fmt.Printf("failed to send 1\n")
+						return true, false
 					}
-				} else {
-					toRemove := []int{}
-					for idx, observer := range it.observers {
-						select {
-						case <-observer.ctx.Done():
-							toRemove = append(toRemove, idx)
-						default:
-							if !item.SendContext(ctx, observer.channel) {
-								return true
-							}
-						}
-					}
-					unsubscribe(toRemove)
+					return false, false
 				}
 			case Drop:
-				if ob != nil {
-					select {
-					default:
-					case <-ctx.Done():
-						return true
-					case ob.channel <- item:
-					}
-				} else {
-					toRemove := []int{}
-					for idx, observer := range it.observers {
-						select {
-						default:
-						case <-ctx.Done():
-							return true
-						case <-observer.ctx.Done():
-							toRemove = append(toRemove, idx)
-						case observer.channel <- item:
-						}
-					}
-					unsubscribe(toRemove)
+				select {
+				default:
+					//fmt.Printf("failed to send item to one observer in drop mode : %+v\n", item)
+				case <-ob.ctx.Done():
+					return false, true
+				case <-ctx.Done():
+					//fmt.Printf("drop done\n")
+					return true, false
+				case ob.channel <- item:
+					//fmt.Printf("delivered item to one observer in drop mode : %+v\n", item)
 				}
 			}
-			return
+			return false, false
+		}
+		deliverAll := func(item Item) (done bool) {
+			//fmt.Printf("sending item to %d observers %+v\n", len(it.observers), item)
+			toRemove := []int{}
+			for idx, observer := range it.observers {
+				done, remove := deliver(item, &observer)
+				if done {
+					return true
+				}
+				if remove {
+					toRemove = append(toRemove, idx)
+				}
+			}
+			unsubscribe(toRemove)
+			return false
 		}
 
 		var latestValue Item
-		hasLatestValue := false
+		sendInitialValue := false
+		initialValue := make(chan Item, 1)
+		if flag, val := it.options.sendLatestAsInitial(); flag {
+			select {
+			case item, ok := <-next:
+				if !ok {
+					return
+				}
+				if item.E != nil {
+					latestValue = Error(item.E)
+				} else {
+					latestValue = Of(item.V)
+				}
+			default:
+				latestValue = Of(val)
+			}
+			sendInitialValue = true
+			initialValue <- latestValue
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -107,27 +125,24 @@ func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy Back
 				if !ok {
 					return
 				}
-				if flag, initValue := observer.options.sendLatestAsInitial(); flag {
-					if hasLatestValue {
-						if done := deliver(latestValue, &observer); done {
-							return
-						}
-					} else {
-						if done := deliver(Of(initValue), &observer); done {
-							return
-						}
+				if sendInitialValue && initialValue == nil {
+					//fmt.Printf("delivering latest value: %+v\n", latestValue)
+					if done, remove := deliver(latestValue, &observer); done || remove {
+						return
 					}
 				}
-				it.Lock()
 				it.observers = append(it.observers, observer)
-				it.Unlock()
 			case item, ok := <-next:
 				if !ok {
 					return
 				}
 				latestValue = item
-				hasLatestValue = true
-				if done := deliver(item, nil); done {
+				if done := deliverAll(item); done {
+					return
+				}
+			case item := <-initialValue:
+				initialValue = nil
+				if done := deliverAll(item); done {
 					return
 				}
 			}
@@ -142,7 +157,6 @@ func (i *eventSourceIterable) closeAllObservers() {
 	for _, observer := range i.observers {
 		close(observer.channel)
 	}
-	close(i.newObserver)
 	i.disposed = true
 	i.Unlock()
 }
@@ -155,7 +169,13 @@ func (i *eventSourceIterable) Observe(opts ...Option) <-chan Item {
 	if i.disposed {
 		close(next)
 	} else {
-		i.newObserver <- observer{options: option, channel: next, ctx: option.buildContext(context.Background())}
+		go func() {
+			select {
+			case <-i.ctx.Done():
+			case <-option.buildContext(emptyContext).Done():
+			case i.newObserver <- observer{options: option, channel: next, ctx: option.buildContext(emptyContext)}:
+			}
+		}()
 	}
 	i.RUnlock()
 	return next

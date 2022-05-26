@@ -177,6 +177,11 @@ func WithPublishStrategy() Option {
 		options.connectable = true
 	})
 }
+func WithPublishStrategyAs(flag bool) Option {
+	return newFuncOption(func(options *funcOption) {
+		options.connectable = flag
+	})
+}
 
 func WithLatestAsInitial(initValue interface{}) Option {
 	return newFuncOption(func(options *funcOption) {
