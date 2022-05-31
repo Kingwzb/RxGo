@@ -2,6 +2,7 @@ package rxgo
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -65,24 +66,45 @@ func Amb(observables []Observable, opts ...Option) Observable {
 func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable {
 	option := parseOptions(opts...)
 	ctx := option.buildContext(emptyContext)
+	path := ctx.Value("path")
+	params := ctx.Value("params")
 	next := option.buildChannel()
 
 	go func() {
 		size := uint32(len(observables))
 		var counter uint32 = 0
 		s := make([]interface{}, size)
+		defer func() {
+			notReady := []interface{}{}
+			for i, d := range s {
+				if d == nil {
+					if params != nil {
+						notReady = append(notReady, params.([]string)[i])
+					} else {
+						notReady = append(notReady, i+1)
+					}
+				}
+			}
+			if len(notReady) > 0 {
+				fmt.Printf("%v combinedLatest items not ready %d/%d (%v)\n", path, len(notReady), size, notReady)
+			}
+		}()
 		mutex := sync.Mutex{}
 		wg := sync.WaitGroup{}
 		wg.Add(int(size))
 		errCh := make(chan struct{})
 
-		handler := func(ctx context.Context, it Iterable, i int) {
+		handler := func(ctx context.Context, it Observable, i int) {
+			var param interface{}
+			if params != nil {
+				param = params.([]string)[i]
+			}
 			defer wg.Done()
-			//fmt.Printf("combinedLatest handler %d/%d started\n", i+1, size)
+			//fmt.Printf("%v/%v combinedLatest handler %d/%d started\n", path, param, i+1, size)
 			//observe := it.Observe(append(opts, WithPublishStrategyAs(false))...)
-			observe := it.Observe()
+			observe := it.Observe(WithContext(context.WithValue(ctx, "path", fmt.Sprintf("%v/%v", path, param))), WithBufferedChannel(1))
 			for {
-				//fmt.Printf("combinedLatest handler %d/%d select\n", i+1, size)
+				//fmt.Printf("%v/%v combinedLatest handler %d/%d select\n", path, param, i+1, size)
 				select {
 				case <-ctx.Done():
 					//fmt.Printf("combinedLatest handler %d/%d exit\n", i+1, size)
@@ -92,7 +114,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						//fmt.Printf("combinedLatest handler %d/%d done\n", i+1, size)
 						return
 					}
-					//fmt.Printf("combinedLatest handler %d/%d received %+v\n", i+1, size, item)
+					//fmt.Printf("%v/%v combinedLatest handler %d/%d (%d) received %+v\n", path, param, counter, size, i+1, item)
 					if item.Error() {
 						next <- item
 						errCh <- struct{}{}
@@ -102,16 +124,16 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 					if s[i] == nil {
 						counter += 1
 					}
-					//fmt.Printf("combinedLatest items ready %d/%d\n", counter, size)
+					//fmt.Printf("%v combinedLatest handler %d/%d (%d) items ready\n", path, counter, size, i+1)
 					s[i] = item.V
 					if counter == size {
 						newData := make([]interface{}, len(s))
 						copy(newData, s)
 						vs := Of(f(newData...))
 						mutex.Unlock()
-						//fmt.Printf("combinedLatest sending %+v\n", vs)
+						//fmt.Printf("%v combinedLatest handler %d/%d (%d) sending %+v\n", path, counter, size, i+1, vs)
 						next <- vs
-						//fmt.Printf("combinedLatest sent %+v\n", vs)
+						//fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, counter, size, i+1, vs)
 					} else {
 						//fmt.Printf("combinedLatest not ready yet\n")
 						mutex.Unlock()
@@ -138,6 +160,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 	}()
 
 	return &ObservableImpl{
+		parent:   ctx,
 		iterable: newChannelIterable(next, opts...),
 	}
 }

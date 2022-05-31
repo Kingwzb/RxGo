@@ -128,21 +128,29 @@ func newEventSourceIterable(ctx context.Context, next <-chan Item, strategy Back
 				if sendInitialValue && initialValue == nil {
 					//fmt.Printf("delivering latest value: %+v\n", latestValue)
 					if done, remove := deliver(latestValue, &observer); done || remove {
+						//fmt.Println("exit iterable_eventsource")
 						return
 					}
 				}
 				it.observers = append(it.observers, observer)
 			case item, ok := <-next:
 				if !ok {
+					//fmt.Println("exit iterable_eventsource")
 					return
 				}
-				latestValue = item
+				if item.E != nil {
+					latestValue = Error(item.E)
+				} else {
+					latestValue = Of(item.V)
+				}
 				if done := deliverAll(item); done {
+					//fmt.Println("exit iterable_eventsource")
 					return
 				}
 			case item := <-initialValue:
 				initialValue = nil
 				if done := deliverAll(item); done {
+					//fmt.Println("exit iterable_eventsource")
 					return
 				}
 			}
