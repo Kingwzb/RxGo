@@ -12,14 +12,15 @@ type subscriber struct {
 	ctx     context.Context
 }
 type channelIterable struct {
-	next                   <-chan Item
-	opts                   []Option
-	options                Option
-	ctx                    context.Context
-	subscribers            []subscriber
-	newSubscriber          chan subscriber
-	mutex                  sync.RWMutex
-	producerAlreadyCreated bool
+	next          <-chan Item
+	opts          []Option
+	options       Option
+	ctx           context.Context
+	producerCtx   context.Context
+	latestVal     interface{}
+	subscribers   []subscriber
+	newSubscriber chan subscriber
+	mutex         sync.RWMutex
 }
 
 func newChannelIterable(next <-chan Item, opts ...Option) Iterable {
@@ -54,7 +55,7 @@ func (i *channelIterable) addSubscriber(option Option) chan Item {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 	ch := i.options.buildChannel()
-	if i.producerAlreadyCreated {
+	if i.producerCtx != nil {
 		go func() {
 			select {
 			case <-option.buildContext(emptyContext).Done():
@@ -72,24 +73,28 @@ func (i *channelIterable) addSubscriber(option Option) chan Item {
 func (i *channelIterable) connect(ctx context.Context) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
-	if !i.producerAlreadyCreated {
+	if i.producerCtx == nil {
+		i.producerCtx = ctx
 		go i.produce(ctx)
-		i.producerAlreadyCreated = true
+	} else {
+		select {
+		case <-i.producerCtx.Done(): // previous was disconnected
+			i.producerCtx = ctx
+			go i.produce(ctx)
+		default:
+		}
 	}
 }
 
 func (i *channelIterable) produce(ctx context.Context) {
-	//fmt.Printf("started producer for %v\n", ctx.Value("path"))
-	closeChan := false
+	fmt.Printf("started producer for %v\n", ctx.Value("path"))
 	defer func() {
+		fmt.Printf("stopped producer for %v\n", ctx.Value("path"))
 		i.mutex.Lock()
-		if closeChan {
-			for _, subscriber := range i.subscribers {
-				//fmt.Printf("closing subscribe %d channel\n", idx)
-				close(subscriber.channel)
-			}
-		}
-		i.producerAlreadyCreated = false
+		/*for _, subscriber := range i.subscribers {
+			//fmt.Printf("closing subscribe %d channel\n", idx)
+			close(subscriber.channel)
+		}*/
 		i.mutex.Unlock()
 	}()
 
@@ -178,6 +183,8 @@ func (i *channelIterable) produce(ctx context.Context) {
 			}
 			if item.E != nil {
 				latestValue = Error(item.E)
+			} else if i.latestVal != nil {
+				latestValue = Of(i.latestVal)
 			} else {
 				latestValue = Of(item.V)
 			}
@@ -206,15 +213,15 @@ func (i *channelIterable) produce(ctx context.Context) {
 			//fmt.Printf("%v added observer %v to %d observers\n", ctx.Value("path"), subscriber.ctx.Value("path"), len(i.subscribers))
 			i.subscribers = append(i.subscribers, subscriber)
 		case item, ok := <-i.next:
-			fmt.Printf("received item for %v: %+v\n", ctx.Value("path"), item)
+			//fmt.Printf("received item for %v: %+v\n", ctx.Value("path"), item)
 			if !ok {
-				closeChan = true
 				return
 			}
 			if item.E != nil {
 				latestValue = Error(item.E)
 			} else {
 				latestValue = Of(item.V)
+				i.latestVal = item.V
 			}
 			if done := deliverAll(item); done {
 				return
