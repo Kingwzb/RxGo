@@ -129,7 +129,7 @@ func (i *channelIterable) produce(ctx context.Context) {
 			default:
 				//fmt.Printf("%v sending to %v: %+v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
 				if !item.SendContext(ctx, ob.channel) {
-					fmt.Printf("%v failed to send to %v: %v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
+					//fmt.Printf("%v failed to send to %v: %v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
 					return true, false
 				}
 				//fmt.Printf("%v sent to %v: %v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
@@ -138,7 +138,7 @@ func (i *channelIterable) produce(ctx context.Context) {
 		case Drop:
 			select {
 			default:
-				fmt.Printf("failed to send item to one observer in drop mode : %+v\n", item)
+				//fmt.Printf("failed to send item to one observer in drop mode : %+v\n", item)
 			case <-ob.ctx.Done():
 				return false, true
 			case <-ctx.Done():
@@ -183,13 +183,16 @@ func (i *channelIterable) produce(ctx context.Context) {
 			}
 			if item.E != nil {
 				latestValue = Error(item.E)
-			} else if i.latestVal != nil {
-				latestValue = Of(i.latestVal)
 			} else {
 				latestValue = Of(item.V)
 			}
 		default:
-			latestValue = Of(val)
+			if i.latestVal != nil {
+				//fmt.Printf("using latestVal as initial value %+v\n", i.latestVal)
+				latestValue = Of(i.latestVal)
+			} else {
+				latestValue = Of(val)
+			}
 		}
 		sendInitialValue = true
 		initialValue <- latestValue
@@ -206,21 +209,22 @@ func (i *channelIterable) produce(ctx context.Context) {
 			if sendInitialValue && initialValue == nil {
 				//fmt.Printf("delivering latest value: %+v to new subscriber %v\n", latestValue, ctx.Value("path"))
 				if done, remove := deliver(latestValue, &subscriber); done || remove {
-					fmt.Printf("failed to deliver latest value: %+v to new subscriber %v\n", latestValue, ctx.Value("path"))
+					//fmt.Printf("failed to deliver latest value: %+v to new subscriber %v\n", latestValue, ctx.Value("path"))
 					return
 				}
 			}
 			//fmt.Printf("%v added observer %v to %d observers\n", ctx.Value("path"), subscriber.ctx.Value("path"), len(i.subscribers))
 			i.subscribers = append(i.subscribers, subscriber)
 		case item, ok := <-i.next:
-			//fmt.Printf("received item for %v: %+v\n", ctx.Value("path"), item)
 			if !ok {
 				return
 			}
+			//fmt.Printf("received item for %v: %+v\n", ctx.Value("path"), item)
 			if item.E != nil {
 				latestValue = Error(item.E)
 			} else {
 				latestValue = Of(item.V)
+				//fmt.Printf("set latestVal for %v: %+v\n", ctx.Value("path"), item.V)
 				i.latestVal = item.V
 			}
 			if done := deliverAll(item); done {
@@ -229,6 +233,8 @@ func (i *channelIterable) produce(ctx context.Context) {
 		case item := <-initialValue:
 			//fmt.Printf("received initial value for %v: %+v\n", ctx.Value("path"), item)
 			initialValue = nil
+			latestValue = item
+			i.latestVal = item.V
 			//fmt.Printf("sending initial value %+v\n", item)
 			if done := deliverAll(item); done {
 				return
