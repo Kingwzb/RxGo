@@ -18,6 +18,7 @@ type channelIterable struct {
 	ctx           context.Context
 	producerCtx   context.Context
 	latestVal     interface{}
+	hasLatestVal  bool
 	subscribers   []subscriber
 	newSubscriber chan subscriber
 	mutex         sync.RWMutex
@@ -43,6 +44,7 @@ func (i *channelIterable) Observe(opts ...Option) <-chan Item {
 		return i.next
 	}
 	if option.isConnectOperation() {
+		//fmt.Println("doing connect operation")
 		ctx := option.buildContext(emptyContext)
 		i.connect(ctx)
 		return nil
@@ -56,13 +58,16 @@ func (i *channelIterable) addSubscriber(option Option) chan Item {
 	defer i.mutex.Unlock()
 	ch := i.options.buildChannel()
 	if i.producerCtx != nil {
+		//fmt.Println("sending new subscriber to newSubscriber channel")
 		go func() {
 			select {
 			case <-option.buildContext(emptyContext).Done():
 			case i.newSubscriber <- subscriber{options: option, channel: ch, ctx: option.buildContext(emptyContext)}:
+				//fmt.Println("sent new subscriber to newSubscriber channel")
 			}
 		}()
 	} else {
+		//fmt.Println("sending new subscriber to subscribers list")
 		ctx := option.buildContext(emptyContext)
 		//fmt.Printf("adding new observer %v to %d on Observe\n", ctx.Value("path"), len(i.subscribers))
 		i.subscribers = append(i.subscribers, subscriber{options: option, channel: ch, ctx: ctx})
@@ -82,14 +87,15 @@ func (i *channelIterable) connect(ctx context.Context) {
 			i.producerCtx = ctx
 			go i.produce(ctx)
 		default:
+			//fmt.Println("producer is not done yet, do nothing at connect")
 		}
 	}
 }
 
 func (i *channelIterable) produce(ctx context.Context) {
-	fmt.Printf("started producer for %v\n", ctx.Value("path"))
+	//fmt.Printf("started producer for %v\n", ctx.Value("path"))
 	defer func() {
-		fmt.Printf("stopped producer for %v\n", ctx.Value("path"))
+		//fmt.Printf("stopped producer for %v\n", ctx.Value("path"))
 		i.mutex.Lock()
 		/*for _, subscriber := range i.subscribers {
 			//fmt.Printf("closing subscribe %d channel\n", idx)
@@ -113,39 +119,42 @@ func (i *channelIterable) produce(ctx context.Context) {
 				}
 			}
 			i.subscribers = remaining
+			//fmt.Printf("removed %v observers for %v, %v remaining\n", len(toRemove), ctx.Value("path"), len(i.subscribers))
 			//i.mutex.Unlock()
 		}
 	}
 	deliver := func(item Item, ob *subscriber) (done bool, remove bool) {
 		strategy := ob.options.getBackPressureStrategy()
-		//fmt.Printf("deliver item in mode %v\n", strategy)
+		//fmt.Printf("observer %v deliver item in mode %v for %v\n", ob.ctx.Value("path"), strategy, ctx.Value("path"))
 		switch strategy {
 		default:
 			fallthrough
 		case Block:
 			select {
 			case <-ob.ctx.Done():
+				//fmt.Printf("observer %v ctx is done for %v\n", ob.ctx.Value("path"), ctx.Value("path"))
 				return false, true
 			default:
-				//fmt.Printf("%v sending to %v: %+v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
+				//fmt.Printf("sending to observer %v for %v: %+v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
 				if !item.SendContext(ctx, ob.channel) {
-					//fmt.Printf("%v failed to send to %v: %v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
+					fmt.Printf("failed to send to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
 					return true, false
 				}
-				//fmt.Printf("%v sent to %v: %v\n", ctx.Value("path"), ob.ctx.Value("path"), item)
+				//fmt.Printf("sent to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
 				return false, false
 			}
 		case Drop:
 			select {
 			default:
-				//fmt.Printf("failed to send item to one observer in drop mode : %+v\n", item)
+				//fmt.Printf("failed to send item to observer %v for %v in drop mode : %+v\n", ob.ctx.Value("path"), ctx.Value("path"), item)
 			case <-ob.ctx.Done():
+				//fmt.Printf("observer %v ctx for %v is done\n", ob.ctx.Value("path"), ctx.Value("path"))
 				return false, true
 			case <-ctx.Done():
-				//fmt.Printf("drop done\n")
+				//fmt.Printf("ctx is done for %v\n", ctx.Value("path"))
 				return true, false
 			case ob.channel <- item:
-				//fmt.Printf("delivered item to one observer in drop mode : %+v\n", item)
+				//fmt.Printf("delivered to %v for %v: %+v\n", ob.ctx.Value("path"), ctx.Value("path"), item)
 			}
 		}
 		return false, false
@@ -155,11 +164,11 @@ func (i *channelIterable) produce(ctx context.Context) {
 		for _, sub := range i.subscribers {
 			subPaths = append(subPaths, sub.ctx.Value("path"))
 		}
-		//fmt.Printf("%v sending item to %d observers %+v: %v\n", ctx.Value("path"), len(i.subscribers), subPaths, item)
 		//defer fmt.Printf("%v done sending item to %d observers %+v\n", ctx.Value("path"), len(i.subscribers), item)
 		toRemove := []int{}
 		i.mutex.Lock()
 		defer i.mutex.Unlock()
+		//fmt.Printf("sending item to %d observers %+v for %v: %+v\n", len(i.subscribers), subPaths, ctx.Value("path"), item)
 		for idx, subscriber := range i.subscribers {
 			done, remove := deliver(item, &subscriber)
 			if done {
@@ -184,11 +193,12 @@ func (i *channelIterable) produce(ctx context.Context) {
 			if item.E != nil {
 				latestValue = Error(item.E)
 			} else {
+				//fmt.Printf("using option's initial value %+v for %v\n", item.V, ctx.Value("path"))
 				latestValue = Of(item.V)
 			}
 		default:
-			if i.latestVal != nil {
-				//fmt.Printf("using latestVal as initial value %+v\n", i.latestVal)
+			if i.hasLatestVal {
+				//fmt.Printf("using latestVal %+v as initial value for %v\n", i.latestVal, ctx.Value("path"))
 				latestValue = Of(i.latestVal)
 			} else {
 				latestValue = Of(val)
@@ -207,37 +217,43 @@ func (i *channelIterable) produce(ctx context.Context) {
 				return
 			}
 			if sendInitialValue && initialValue == nil {
-				//fmt.Printf("delivering latest value: %+v to new subscriber %v\n", latestValue, ctx.Value("path"))
+				//fmt.Printf("delivering latestVal %+v to new subscriber %v for %v\n", latestValue, subscriber.ctx.Value("path"), ctx.Value("path"))
 				if done, remove := deliver(latestValue, &subscriber); done || remove {
-					//fmt.Printf("failed to deliver latest value: %+v to new subscriber %v\n", latestValue, ctx.Value("path"))
+					//fmt.Printf("failed to deliver latestVal %+v to new subscriber %v for %v\n", latestValue, subscriber.ctx.Value("path"), ctx.Value("path"))
 					return
 				}
 			}
-			//fmt.Printf("%v added observer %v to %d observers\n", ctx.Value("path"), subscriber.ctx.Value("path"), len(i.subscribers))
+			//fmt.Printf("added observer %v to %d observers for %v\n", subscriber.ctx.Value("path"), len(i.subscribers), ctx.Value("path"))
 			i.subscribers = append(i.subscribers, subscriber)
 		case item, ok := <-i.next:
 			if !ok {
 				return
 			}
-			//fmt.Printf("received item for %v: %+v\n", ctx.Value("path"), item)
+			//fmt.Printf("received latestVal %+v for %v\n", item, ctx.Value("path"))
 			if item.E != nil {
 				latestValue = Error(item.E)
 			} else {
 				latestValue = Of(item.V)
-				//fmt.Printf("set latestVal for %v: %+v\n", ctx.Value("path"), item.V)
+				//fmt.Printf("set latestVal1 %+v for %v\n", item, ctx.Value("path"))
 				i.latestVal = item.V
+				i.hasLatestVal = true
+				initialValue = nil
 			}
 			if done := deliverAll(item); done {
 				return
 			}
-		case item := <-initialValue:
-			//fmt.Printf("received initial value for %v: %+v\n", ctx.Value("path"), item)
-			initialValue = nil
-			latestValue = item
-			i.latestVal = item.V
-			//fmt.Printf("sending initial value %+v\n", item)
-			if done := deliverAll(item); done {
-				return
+		case item, ok := <-initialValue:
+			if ok {
+				//fmt.Printf("received initial value(latestVal2) %+v for %v\n", item, ctx.Value("path"))
+				initialValue = nil
+				latestValue = item
+				//fmt.Printf("set latestVal2 %+v for %v\n", item, ctx.Value("path"))
+				i.latestVal = item.V
+				i.hasLatestVal = true
+				//fmt.Printf("sending initial value %+v\n", item)
+				if done := deliverAll(item); done {
+					return
+				}
 			}
 		}
 	}

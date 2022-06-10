@@ -74,7 +74,12 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 		size := uint32(len(observables))
 		var counter uint32 = 0
 		s := make([]interface{}, size)
-		defer func() {
+		mutex := sync.Mutex{}
+		wg := sync.WaitGroup{}
+		wg.Add(int(size))
+		errCh := make(chan struct{})
+
+		printNotReady := func() {
 			notReady := []interface{}{}
 			for i, d := range s {
 				if d == nil {
@@ -88,12 +93,8 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 			if len(notReady) > 0 {
 				fmt.Printf("%v combinedLatest items not ready %d/%d (%v)\n", path, len(notReady), size, notReady)
 			}
-		}()
-		mutex := sync.Mutex{}
-		wg := sync.WaitGroup{}
-		wg.Add(int(size))
-		errCh := make(chan struct{})
-
+		}
+		defer printNotReady()
 		handler := func(ctx context.Context, it Observable, i int) {
 			var param interface{}
 			if params != nil {
@@ -136,7 +137,9 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						//fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, counter, size, i+1, vs)
 					} else {
 						//fmt.Printf("combinedLatest not ready yet\n")
+						//printNotReady()
 						mutex.Unlock()
+
 					}
 				}
 			}
