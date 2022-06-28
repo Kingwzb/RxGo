@@ -23,6 +23,7 @@ type Option interface {
 	isConnectOperation() bool
 	isSerialized() (bool, func(interface{}) int)
 	sendLatestAsInitial() (bool, interface{})
+	toLogTracePath() bool
 }
 
 type funcOption struct {
@@ -40,8 +41,12 @@ type funcOption struct {
 	serialized           func(interface{}) int
 	withLatestAsInitial  bool
 	initValue            interface{}
+	logTracePath         bool
 }
 
+func (fdo *funcOption) toLogTracePath() bool {
+	return fdo.logTracePath
+}
 func (fdo *funcOption) sendLatestAsInitial() (bool, interface{}) {
 	return fdo.withLatestAsInitial, fdo.initValue
 }
@@ -187,6 +192,12 @@ func WithLatestAsInitial(initValue interface{}) Option {
 	return newFuncOption(func(options *funcOption) {
 		options.withLatestAsInitial = true
 		options.initValue = initValue
+	})
+}
+
+func WithLogTracePath(flag bool) Option {
+	return newFuncOption(func(options *funcOption) {
+		options.logTracePath = flag
 	})
 }
 

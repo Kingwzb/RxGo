@@ -54,7 +54,11 @@ func send(ctx context.Context, ch chan<- Item, items ...interface{}) {
 		switch item := currentItem.(type) {
 		default:
 			rt := reflect.TypeOf(item)
-			switch rt.Kind() {
+			var tp reflect.Kind
+			if rt != nil {
+				tp = rt.Kind()
+			}
+			switch tp {
 			default:
 				Of(item).SendContext(ctx, ch)
 			case reflect.Chan:

@@ -101,21 +101,31 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 				param = params.([]string)[i]
 			}
 			defer wg.Done()
-			//fmt.Printf("%v/%v combinedLatest handler %d/%d started\n", path, param, i+1, size)
+			if option.toLogTracePath() {
+				fmt.Printf("%v/%v combinedLatest handler %d/%d started\n", path, param, i+1, size)
+			}
 			//observe := it.Observe(append(opts, WithPublishStrategyAs(false))...)
 			observe := it.Observe(WithContext(context.WithValue(ctx, "path", fmt.Sprintf("%v/%v", path, param))), WithBufferedChannel(1))
 			for {
-				//fmt.Printf("%v/%v combinedLatest handler %d/%d select\n", path, param, i+1, size)
+				if option.toLogTracePath() {
+					fmt.Printf("%v/%v combinedLatest handler %d/%d select\n", path, param, i+1, size)
+				}
 				select {
 				case <-ctx.Done():
-					//fmt.Printf("combinedLatest handler %d/%d exit\n", i+1, size)
+					if option.toLogTracePath() {
+						fmt.Printf("combinedLatest handler %d/%d exit\n", i+1, size)
+					}
 					return
 				case item, ok := <-observe:
 					if !ok {
-						//fmt.Printf("combinedLatest handler %d/%d done\n", i+1, size)
+						if option.toLogTracePath() {
+							fmt.Printf("combinedLatest handler %d/%d done\n", i+1, size)
+						}
 						return
 					}
-					//fmt.Printf("%v/%v combinedLatest handler %d/%d (%d) received %+v\n", path, param, counter, size, i+1, item)
+					/*if option.toLogTracePath() {
+						fmt.Printf("%v/%v combinedLatest handler %d/%d (%d) received %+v\n", path, param, counter, size, i+1, item)
+					}*/
 					if item.Error() {
 						next <- item
 						errCh <- struct{}{}
@@ -125,19 +135,27 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 					if s[i] == nil {
 						counter += 1
 					}
-					//fmt.Printf("%v combinedLatest handler %d/%d (%d) items ready\n", path, counter, size, i+1)
+					/*if option.toLogTracePath() {
+						fmt.Printf("%v combinedLatest handler %d/%d (%d) items ready\n", path, counter, size, i+1)
+					}*/
 					s[i] = item.V
 					if counter == size {
 						newData := make([]interface{}, len(s))
 						copy(newData, s)
 						vs := Of(f(newData...))
 						mutex.Unlock()
-						//fmt.Printf("%v combinedLatest handler %d/%d (%d) sending %+v\n", path, counter, size, i+1, vs)
+						/*if option.toLogTracePath() {
+							fmt.Printf("%v combinedLatest handler %d/%d (%d) sending %+v\n", path, counter, size, i+1, vs)
+						}*/
 						next <- vs
-						//fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, counter, size, i+1, vs)
+						/*if option.toLogTracePath() {
+							fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, counter, size, i+1, vs)
+						}*/
 					} else {
-						//fmt.Printf("combinedLatest not ready yet\n")
-						//printNotReady()
+						if option.toLogTracePath() {
+							fmt.Printf("combinedLatest %v not ready yet\n", path)
+							printNotReady()
+						}
 						mutex.Unlock()
 
 					}
@@ -157,7 +175,9 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 		}()
 
 		wg.Wait()
-		//fmt.Printf("combinedLatest exit\n")
+		if option.toLogTracePath() {
+			fmt.Printf("combinedLatest %v exit\n", path)
+		}
 		close(next)
 		close(errCh)
 	}()
