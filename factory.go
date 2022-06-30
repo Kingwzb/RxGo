@@ -74,6 +74,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 		size := uint32(len(observables))
 		var counter uint32 = 0
 		s := make([]interface{}, size)
+		ready := make([]bool, size)
 		mutex := sync.Mutex{}
 		wg := sync.WaitGroup{}
 		wg.Add(int(size))
@@ -105,7 +106,14 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 				fmt.Printf("%v/%v combinedLatest handler %d/%d started\n", path, param, i+1, size)
 			}
 			//observe := it.Observe(append(opts, WithPublishStrategyAs(false))...)
-			observe := it.Observe(WithContext(context.WithValue(ctx, "path", fmt.Sprintf("%v/%v", path, param))), WithBufferedChannel(1))
+			var observe <-chan Item
+			if it == nil {
+				c := make(chan Item, 1)
+				c <- Of(nil)
+				observe = c
+			} else {
+				observe = it.Observe(WithContext(context.WithValue(ctx, "path", fmt.Sprintf("%v/%v", path, param))), WithBufferedChannel(1))
+			}
 			for {
 				if option.toLogTracePath() {
 					fmt.Printf("%v/%v combinedLatest handler %d/%d select\n", path, param, i+1, size)
@@ -132,9 +140,13 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						return
 					}
 					mutex.Lock()
-					if s[i] == nil {
+					if !ready[i] {
 						counter += 1
+						if counter == size {
+							fmt.Printf("combinedLatest %v is ready now\n", path)
+						}
 					}
+					ready[i] = true
 					/*if option.toLogTracePath() {
 						fmt.Printf("%v combinedLatest handler %d/%d (%d) items ready\n", path, counter, size, i+1)
 					}*/
@@ -157,7 +169,6 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 							printNotReady()
 						}
 						mutex.Unlock()
-
 					}
 				}
 			}

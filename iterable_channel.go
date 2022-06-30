@@ -185,6 +185,7 @@ func (i *channelIterable) produce(ctx context.Context) {
 	sendInitialValue := false
 	initialValue := make(chan Item, 1)
 	if flag, val := i.options.sendLatestAsInitial(); flag {
+		sendInitialValue = true
 		select {
 		case item, ok := <-i.next:
 			if !ok {
@@ -201,11 +202,16 @@ func (i *channelIterable) produce(ctx context.Context) {
 				//fmt.Printf("using latestVal %+v as initial value for %v\n", i.latestVal, ctx.Value("path"))
 				latestValue = Of(i.latestVal)
 			} else {
-				latestValue = Of(val)
+				if val == nil {
+					sendInitialValue = false
+				} else {
+					latestValue = Of(val)
+				}
 			}
 		}
-		sendInitialValue = true
-		initialValue <- latestValue
+		if sendInitialValue {
+			initialValue <- latestValue
+		}
 	}
 	//fmt.Printf("started producer for %v\n", ctx.Value("path"))
 	for {
