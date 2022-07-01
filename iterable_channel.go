@@ -17,7 +17,7 @@ type channelIterable struct {
 	options       Option
 	ctx           context.Context
 	producerCtx   context.Context
-	latestVal     interface{}
+	latestVal     Item
 	hasLatestVal  bool
 	subscribers   []subscriber
 	newSubscriber chan subscriber
@@ -93,9 +93,13 @@ func (i *channelIterable) connect(ctx context.Context) {
 }
 
 func (i *channelIterable) produce(ctx context.Context) {
-	//fmt.Printf("started producer for %v\n", ctx.Value("path"))
+	if i.options.toLogTracePath() {
+		fmt.Printf("started producer for %v\n", ctx.Value("path"))
+	}
 	defer func() {
-		//fmt.Printf("stopped producer for %v\n", ctx.Value("path"))
+		if i.options.toLogTracePath() {
+			fmt.Printf("stopped producer for %v\n", ctx.Value("path"))
+		}
 		i.mutex.Lock()
 		/*for _, subscriber := range i.subscribers {
 			//fmt.Printf("closing subscribe %d channel\n", idx)
@@ -113,48 +117,68 @@ func (i *channelIterable) produce(ctx context.Context) {
 				if which >= len(toRemove) || idx != toRemove[which] {
 					remaining = append(remaining, subscriber)
 				} else {
-					//fmt.Printf("closing subscribe %d channel\n", idx)
+					if i.options.toLogTracePath() {
+						fmt.Printf("closing subscribe %d channel\n", idx)
+					}
 					close(subscriber.channel)
 					which++
 				}
 			}
 			i.subscribers = remaining
-			//fmt.Printf("removed %v observers for %v, %v remaining\n", len(toRemove), ctx.Value("path"), len(i.subscribers))
+			if i.options.toLogTracePath() {
+				fmt.Printf("removed %v observers for %v, %v remaining\n", len(toRemove), ctx.Value("path"), len(i.subscribers))
+			}
 			//i.mutex.Unlock()
 		}
 	}
 	deliver := func(item Item, ob *subscriber) (done bool, remove bool) {
 		strategy := ob.options.getBackPressureStrategy()
-		//fmt.Printf("observer %v deliver item in mode %v for %v\n", ob.ctx.Value("path"), strategy, ctx.Value("path"))
+		if i.options.toLogTracePath() {
+			fmt.Printf("observer %v deliver item in mode %v for %v\n", ob.ctx.Value("path"), strategy, ctx.Value("path"))
+		}
 		switch strategy {
 		default:
 			fallthrough
 		case Block:
 			select {
 			case <-ob.ctx.Done():
-				//fmt.Printf("observer %v ctx is done for %v\n", ob.ctx.Value("path"), ctx.Value("path"))
+				if i.options.toLogTracePath() {
+					fmt.Printf("observer %v ctx is done for %v\n", ob.ctx.Value("path"), ctx.Value("path"))
+				}
 				return false, true
 			default:
-				//fmt.Printf("sending to observer %v for %v: %+v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
+				if i.options.toLogTracePath() {
+					fmt.Printf("sending to observer %v for %v: %+v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
+				}
 				if !item.SendContext(ctx, ob.channel) {
 					fmt.Printf("failed to send to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
 					return true, false
 				}
-				//fmt.Printf("sent to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
+				if i.options.toLogTracePath() {
+					fmt.Printf("sent to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
+				}
 				return false, false
 			}
 		case Drop:
 			select {
 			default:
-				//fmt.Printf("failed to send item to observer %v for %v in drop mode : %+v\n", ob.ctx.Value("path"), ctx.Value("path"), item)
+				if i.options.toLogTracePath() {
+					fmt.Printf("failed to send item to observer %v for %v in drop mode : %+v\n", ob.ctx.Value("path"), ctx.Value("path"), item)
+				}
 			case <-ob.ctx.Done():
-				//fmt.Printf("observer %v ctx for %v is done\n", ob.ctx.Value("path"), ctx.Value("path"))
+				if i.options.toLogTracePath() {
+					fmt.Printf("observer %v ctx for %v is done\n", ob.ctx.Value("path"), ctx.Value("path"))
+				}
 				return false, true
 			case <-ctx.Done():
-				//fmt.Printf("ctx is done for %v\n", ctx.Value("path"))
+				if i.options.toLogTracePath() {
+					fmt.Printf("ctx is done for %v\n", ctx.Value("path"))
+				}
 				return true, false
 			case ob.channel <- item:
-				//fmt.Printf("delivered to %v for %v: %+v\n", ob.ctx.Value("path"), ctx.Value("path"), item)
+				if i.options.toLogTracePath() {
+					fmt.Printf("delivered to %v for %v: %+v\n", ob.ctx.Value("path"), ctx.Value("path"), item)
+				}
 			}
 		}
 		return false, false
@@ -164,11 +188,15 @@ func (i *channelIterable) produce(ctx context.Context) {
 		for _, sub := range i.subscribers {
 			subPaths = append(subPaths, sub.ctx.Value("path"))
 		}
-		//defer fmt.Printf("%v done sending item to %d observers %+v\n", ctx.Value("path"), len(i.subscribers), item)
+		if i.options.toLogTracePath() {
+			defer fmt.Printf("%v done sending item to %d observers %+v\n", ctx.Value("path"), len(i.subscribers), item)
+		}
 		toRemove := []int{}
 		i.mutex.Lock()
 		defer i.mutex.Unlock()
-		//fmt.Printf("sending item to %d observers %+v for %v: %+v\n", len(i.subscribers), subPaths, ctx.Value("path"), item)
+		if i.options.toLogTracePath() {
+			fmt.Printf("sending item to %d observers %+v for %v: %+v\n", len(i.subscribers), subPaths, ctx.Value("path"), item)
+		}
 		for idx, subscriber := range i.subscribers {
 			done, remove := deliver(item, &subscriber)
 			if done {
@@ -181,39 +209,35 @@ func (i *channelIterable) produce(ctx context.Context) {
 		unsubscribe(toRemove)
 		return false
 	}
-	var latestValue Item
-	sendInitialValue := false
 	initialValue := make(chan Item, 1)
 	if flag, val := i.options.sendLatestAsInitial(); flag {
-		sendInitialValue = true
 		select {
 		case item, ok := <-i.next:
 			if !ok {
 				return
 			}
+			i.hasLatestVal = true
 			if item.E != nil {
-				latestValue = Error(item.E)
+				i.latestVal = Error(item.E)
 			} else {
-				//fmt.Printf("using option's initial value %+v for %v\n", item.V, ctx.Value("path"))
-				latestValue = Of(item.V)
+				if i.options.toLogTracePath() {
+					fmt.Printf("using option's initial value %+v for %v\n", item.V, ctx.Value("path"))
+				}
+				i.latestVal = Of(item.V)
 			}
 		default:
-			if i.hasLatestVal {
-				//fmt.Printf("using latestVal %+v as initial value for %v\n", i.latestVal, ctx.Value("path"))
-				latestValue = Of(i.latestVal)
-			} else {
-				if val == nil {
-					sendInitialValue = false
-				} else {
-					latestValue = Of(val)
-				}
+			if !i.hasLatestVal && val != nil {
+				i.hasLatestVal = true
+				i.latestVal = Of(val)
 			}
 		}
-		if sendInitialValue {
-			initialValue <- latestValue
+		if i.hasLatestVal {
+			initialValue <- i.latestVal
 		}
 	}
-	//fmt.Printf("started producer for %v\n", ctx.Value("path"))
+	if i.options.toLogTracePath() {
+		fmt.Printf("started producer for %v\n", ctx.Value("path"))
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -222,41 +246,51 @@ func (i *channelIterable) produce(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if sendInitialValue && initialValue == nil {
-				//fmt.Printf("delivering latestVal %+v to new subscriber %v for %v\n", latestValue, subscriber.ctx.Value("path"), ctx.Value("path"))
-				if done, remove := deliver(latestValue, &subscriber); done || remove {
-					//fmt.Printf("failed to deliver latestVal %+v to new subscriber %v for %v\n", latestValue, subscriber.ctx.Value("path"), ctx.Value("path"))
+			if i.hasLatestVal && initialValue == nil {
+				if i.options.toLogTracePath() {
+					fmt.Printf("delivering latestVal %+v to new subscriber %v for %v\n", i.latestVal, subscriber.ctx.Value("path"), ctx.Value("path"))
+				}
+				if done, remove := deliver(i.latestVal, &subscriber); done || remove {
+					if i.options.toLogTracePath() {
+						fmt.Printf("failed to deliver latestVal %+v to new subscriber %v for %v\n", i.latestVal, subscriber.ctx.Value("path"), ctx.Value("path"))
+					}
 					return
 				}
 			}
-			//fmt.Printf("added observer %v to %d observers for %v\n", subscriber.ctx.Value("path"), len(i.subscribers), ctx.Value("path"))
+			if i.options.toLogTracePath() {
+				fmt.Printf("added observer %v to %d observers for %v\n", subscriber.ctx.Value("path"), len(i.subscribers), ctx.Value("path"))
+			}
 			i.subscribers = append(i.subscribers, subscriber)
 		case item, ok := <-i.next:
 			if !ok {
 				return
 			}
-			//fmt.Printf("received latestVal %+v for %v\n", item, ctx.Value("path"))
-			if item.E != nil {
-				latestValue = Error(item.E)
-			} else {
-				latestValue = Of(item.V)
-				//fmt.Printf("set latestVal1 %+v for %v\n", item, ctx.Value("path"))
-				i.latestVal = item.V
-				i.hasLatestVal = true
-				initialValue = nil
+			if i.options.toLogTracePath() {
+				fmt.Printf("received latestVal %+v for %v\n", item, ctx.Value("path"))
 			}
+			i.hasLatestVal = true
+			i.latestVal = item
+			if i.options.toLogTracePath() {
+				fmt.Printf("set latestVal1 %+v for %v\n", item, ctx.Value("path"))
+			}
+			initialValue = nil
 			if done := deliverAll(item); done {
 				return
 			}
 		case item, ok := <-initialValue:
 			if ok {
-				//fmt.Printf("received initial value(latestVal2) %+v for %v\n", item, ctx.Value("path"))
+				if i.options.toLogTracePath() {
+					fmt.Printf("received initial value(latestVal2) %+v for %v\n", item, ctx.Value("path"))
+				}
 				initialValue = nil
-				latestValue = item
-				//fmt.Printf("set latestVal2 %+v for %v\n", item, ctx.Value("path"))
-				i.latestVal = item.V
+				if i.options.toLogTracePath() {
+					fmt.Printf("set latestVal2 %+v for %v\n", item, ctx.Value("path"))
+				}
 				i.hasLatestVal = true
-				//fmt.Printf("sending initial value %+v\n", item)
+				i.latestVal = item
+				if i.options.toLogTracePath() {
+					fmt.Printf("sending initial value %+v\n", item)
+				}
 				if done := deliverAll(item); done {
 					return
 				}

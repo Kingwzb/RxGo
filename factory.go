@@ -156,13 +156,13 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						copy(newData, s)
 						vs := Of(f(newData...))
 						mutex.Unlock()
-						/*if option.toLogTracePath() {
+						if option.toLogTracePath() {
 							fmt.Printf("%v combinedLatest handler %d/%d (%d) sending %+v\n", path, counter, size, i+1, vs)
-						}*/
+						}
 						next <- vs
-						/*if option.toLogTracePath() {
+						if option.toLogTracePath() {
 							fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, counter, size, i+1, vs)
-						}*/
+						}
 					} else {
 						if option.toLogTracePath() {
 							fmt.Printf("combinedLatest %v not ready yet\n", path)
