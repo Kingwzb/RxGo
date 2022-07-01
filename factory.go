@@ -82,8 +82,8 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 
 		printNotReady := func() {
 			notReady := []interface{}{}
-			for i, d := range s {
-				if d == nil {
+			for i, f := range ready {
+				if !f {
 					if params != nil {
 						notReady = append(notReady, params.([]string)[i])
 					} else {
@@ -121,19 +121,19 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 				select {
 				case <-ctx.Done():
 					if option.toLogTracePath() {
-						fmt.Printf("combinedLatest handler %d/%d exit\n", i+1, size)
+						fmt.Printf("%v/%v combinedLatest handler %d/%d exit\n", path, param, i+1, size)
 					}
 					return
 				case item, ok := <-observe:
 					if !ok {
 						if option.toLogTracePath() {
-							fmt.Printf("combinedLatest handler %d/%d done\n", i+1, size)
+							fmt.Printf("%v/%v combinedLatest handler %d/%d done\n", path, param, i+1, size)
 						}
 						return
 					}
-					/*if option.toLogTracePath() {
+					if option.toLogTracePath() {
 						fmt.Printf("%v/%v combinedLatest handler %d/%d (%d) received %+v\n", path, param, counter, size, i+1, item)
-					}*/
+					}
 					if item.Error() {
 						next <- item
 						errCh <- struct{}{}
@@ -143,7 +143,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 					if !ready[i] {
 						counter += 1
 						if counter == size {
-							fmt.Printf("combinedLatest %v is ready now\n", path)
+							fmt.Printf("%v combinedLatest is ready now\n", path)
 						}
 					}
 					ready[i] = true
@@ -165,7 +165,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						}
 					} else {
 						if option.toLogTracePath() {
-							fmt.Printf("combinedLatest %v not ready yet\n", path)
+							fmt.Printf("%v combinedLatest not ready yet\n", path)
 							printNotReady()
 						}
 						mutex.Unlock()
@@ -187,7 +187,7 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 
 		wg.Wait()
 		if option.toLogTracePath() {
-			fmt.Printf("combinedLatest %v exit\n", path)
+			fmt.Printf("%v combinedLatest exit\n", path)
 		}
 		close(next)
 		close(errCh)
