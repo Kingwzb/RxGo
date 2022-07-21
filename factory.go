@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -133,17 +134,17 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						return
 					}
 					if option.toLogTracePath() {
-						fmt.Printf("%v/%v combinedLatest handler %d/%d (%d) received %+v\n", path, param, counter, size, i+1, item)
+						fmt.Printf("%v/%v combinedLatest handler %d/%d (%d) received %+v\n", path, param, atomic.LoadUint32(&counter), size, i+1, item)
 					}
 					if item.Error() {
 						next <- item
 						errCh <- struct{}{}
+						mutex.Unlock()
 						return
 					}
 					mutex.Lock()
 					if !ready[i] {
-						counter += 1
-						if counter == size {
+						if atomic.AddUint32(&counter, 1) == size {
 							fmt.Printf("%v combinedLatest is ready now\n", path)
 						}
 					}
@@ -152,24 +153,24 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 						fmt.Printf("%v combinedLatest handler %d/%d (%d) items ready\n", path, counter, size, i+1)
 					}*/
 					s[i] = item.V
-					if counter == size {
+					if atomic.LoadUint32(&counter) == size {
 						newData := make([]interface{}, len(s))
 						copy(newData, s)
 						vs := Of(f(newData...))
 						mutex.Unlock()
 						if option.toLogTracePath() {
-							fmt.Printf("%v combinedLatest handler %d/%d (%d) sending %+v\n", path, counter, size, i+1, vs)
+							fmt.Printf("%v combinedLatest handler %d/%d (%d) sending %+v\n", path, atomic.LoadUint32(&counter), size, i+1, vs)
 						}
 						next <- vs
 						if option.toLogTracePath() {
-							fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, counter, size, i+1, vs)
+							fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, atomic.LoadUint32(&counter), size, i+1, vs)
 						}
 					} else {
+						mutex.Unlock()
 						if option.toLogTracePath() {
 							fmt.Printf("%v combinedLatest not ready yet\n", path)
 							printNotReady()
 						}
-						mutex.Unlock()
 					}
 				}
 			}
