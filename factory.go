@@ -139,7 +139,6 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 					if item.Error() {
 						next <- item
 						errCh <- struct{}{}
-						mutex.Unlock()
 						return
 					}
 					mutex.Lock()
@@ -166,11 +165,11 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 							fmt.Printf("%v combinedLatest handler %d/%d (%d) sent %+v\n", path, atomic.LoadUint32(&counter), size, i+1, vs)
 						}
 					} else {
-						mutex.Unlock()
 						if option.toLogTracePath() {
 							fmt.Printf("%v combinedLatest not ready yet\n", path)
 							printNotReady()
 						}
+						mutex.Unlock()
 					}
 				}
 			}
