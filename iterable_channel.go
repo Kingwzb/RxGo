@@ -39,39 +39,52 @@ func newChannelIterable(next <-chan Item, opts ...Option) Iterable {
 func (i *channelIterable) Observe(opts ...Option) <-chan Item {
 	mergedOptions := append(i.opts, opts...)
 	option := parseOptions(mergedOptions...)
+	ctx := option.buildContext(emptyContext)
+	//fmt.Printf("%v 1\n", ctx.Value("path"))
 	//fmt.Printf("iterChan Observe option: %+v\n", option)
 	if !option.isConnectable() {
+		//fmt.Printf("%v 2\n", ctx.Value("path"))
 		return i.next
 	}
 	if option.isConnectOperation() {
+		//fmt.Printf("%v 3\n", ctx.Value("path"))
 		//fmt.Println("doing connect operation")
-		ctx := option.buildContext(emptyContext)
 		i.connect(ctx)
+		//fmt.Printf("%v 4\n", ctx.Value("path"))
 		return nil
 	}
+	//fmt.Printf("%v 5\n", ctx.Value("path"))
 	c := i.addSubscriber(option)
+	//fmt.Printf("%v 6\n", ctx.Value("path"))
 	return c
 }
 
 func (i *channelIterable) addSubscriber(option Option) chan Item {
+	//fmt.Printf("%v 7\n", i.ctx.Value("path"))
 	i.mutex.Lock()
+	//fmt.Printf("%v 8\n", i.ctx.Value("path"))
 	defer i.mutex.Unlock()
 	ch := i.options.buildChannel()
+	//fmt.Printf("%v 9\n", i.ctx.Value("path"))
 	if i.producerCtx != nil {
 		//fmt.Println("sending new subscriber to newSubscriber channel")
+		subCtx := option.buildContext(emptyContext)
 		go func() {
 			select {
-			case <-option.buildContext(emptyContext).Done():
-			case i.newSubscriber <- subscriber{options: option, channel: ch, ctx: option.buildContext(emptyContext)}:
+			case <-i.ctx.Done():
+			case <-subCtx.Done():
+			case i.newSubscriber <- subscriber{options: option, channel: ch, ctx: subCtx}:
 				//fmt.Println("sent new subscriber to newSubscriber channel")
 			}
 		}()
 	} else {
+		//fmt.Printf("%v 10\n", i.ctx.Value("path"))
 		//fmt.Println("sending new subscriber to subscribers list")
 		ctx := option.buildContext(emptyContext)
 		//fmt.Printf("adding new observer %v to %d on Observe\n", ctx.Value("path"), len(i.subscribers))
 		i.subscribers = append(i.subscribers, subscriber{options: option, channel: ch, ctx: ctx})
 	}
+	//fmt.Printf("%v 11\n", i.ctx.Value("path"))
 	return ch
 }
 
@@ -84,6 +97,7 @@ func (i *channelIterable) connect(ctx context.Context) {
 	} else {
 		select {
 		case <-i.producerCtx.Done(): // previous was disconnected
+			fmt.Printf("prev producer was disconnected, restarting producer %v\n", ctx.Value("path"))
 			i.producerCtx = ctx
 			go i.produce(ctx)
 		default:
@@ -94,18 +108,18 @@ func (i *channelIterable) connect(ctx context.Context) {
 
 func (i *channelIterable) produce(ctx context.Context) {
 	if i.options.toLogTracePath() {
-		fmt.Printf("started producer for %v\n", ctx.Value("path"))
+		fmt.Printf("starting producer for %v\n", ctx.Value("path"))
 	}
 	defer func() {
 		if i.options.toLogTracePath() {
 			fmt.Printf("stopped producer for %v\n", ctx.Value("path"))
 		}
-		i.mutex.Lock()
+		//i.mutex.Lock()
 		/*for _, subscriber := range i.subscribers {
 			//fmt.Printf("closing subscribe %d channel\n", idx)
 			close(subscriber.channel)
 		}*/
-		i.mutex.Unlock()
+		//i.mutex.Unlock()
 	}()
 
 	unsubscribe := func(toRemove []int) {
@@ -152,7 +166,9 @@ func (i *channelIterable) produce(ctx context.Context) {
 					fmt.Printf("sending to observer %v for %v: %+v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
 				}
 				if !item.SendContext(ctx, ob.channel) {
-					fmt.Printf("failed to send to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
+					if logTracePath {
+						fmt.Printf("failed to send to %v for %v: %v\n", ob.ctx.Value("path"), item, ctx.Value("path"))
+					}
 					return true, false
 				}
 				if logTracePath {
@@ -186,19 +202,22 @@ func (i *channelIterable) produce(ctx context.Context) {
 	}
 	deliverAll := func(item Item) (done bool) {
 		subPaths := []interface{}{}
-		for _, sub := range i.subscribers {
+		i.mutex.RLock()
+		subs := make([]subscriber, len(i.subscribers))
+		copy(subs, i.subscribers)
+		i.mutex.RUnlock()
+		for _, sub := range subs {
 			subPaths = append(subPaths, sub.ctx.Value("path"))
 		}
 		if i.options.toLogTracePath() {
-			defer fmt.Printf("%v done sending item to %d observers %+v\n", ctx.Value("path"), len(i.subscribers), item)
+			defer fmt.Printf("%v done sending item to %d observers %+v\n", ctx.Value("path"), len(subs), item)
 		}
 		toRemove := []int{}
-		i.mutex.Lock()
-		defer i.mutex.Unlock()
 		if i.options.toLogTracePath() {
-			fmt.Printf("sending item to %d observers %+v for %v: %+v\n", len(i.subscribers), subPaths, ctx.Value("path"), item)
+			fmt.Printf("sending item to %d observers %+v for %v: %+v\n", len(subs), subPaths, ctx.Value("path"), item)
 		}
-		for idx, subscriber := range i.subscribers {
+
+		for idx, subscriber := range subs {
 			done, remove := deliver(item, &subscriber)
 			if done {
 				return true
@@ -231,7 +250,9 @@ func (i *channelIterable) produce(ctx context.Context) {
 			}
 		}
 		if i.hasLatestVal {
-			fmt.Printf("using latestVal %+v as initial value for %v\n", i.latestVal, ctx.Value("path"))
+			if i.options.toLogTracePath() {
+				fmt.Printf("using latestVal %+v as initial value for %v\n", i.latestVal, ctx.Value("path"))
+			}
 			initialValue <- i.latestVal
 		}
 	}

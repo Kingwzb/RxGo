@@ -113,8 +113,14 @@ func CombineLatest(f FuncN, observables []Observable, opts ...Option) Observable
 				c <- Of(nil)
 				observe = c
 			} else {
+				if option.toLogTracePath() {
+					fmt.Printf("%v/%v combinedLatest handler %d/%d creating observe channel\n", path, param, i+1, size)
+				}
 				observe = it.Observe(WithContext(context.WithValue(ctx, "path", fmt.Sprintf("%v/%v", path, param))), WithBufferedChannel(1),
 					WithLogTracePath(option.toLogTracePath()))
+				if option.toLogTracePath() {
+					fmt.Printf("%v/%v combinedLatest handler %d/%d created observe channel\n", path, param, i+1, size)
+				}
 			}
 			for {
 				if option.toLogTracePath() {
